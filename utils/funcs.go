@@ -1,0 +1,245 @@
+package utils
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/RazerFrFr/Voryn/models"
+	"github.com/RazerFrFr/Voryn/structs"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+var DB *mongo.Database
+
+func InitDB() {
+	uri := os.Getenv("MONGO_URI")
+	dbName := os.Getenv("DB_NAME")
+
+	if uri == "" || dbName == "" {
+		log.Fatal("MONGO_URI or DB_NAME environment variable not set")
+	}
+
+	fullURI := fmt.Sprintf("%s%s", uri, dbName)
+
+	clientOptions := options.Client().
+		ApplyURI(fullURI).
+		SetServerSelectionTimeout(10 * time.Second)
+
+	client, err := mongo.NewClient(clientOptions)
+	if err != nil {
+		Logger.Error("Failed to create MongoDB client:", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = client.Connect(ctx)
+	if err != nil {
+		Logger.Error("MongoDB connection failed:", err)
+	}
+
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		Logger.Error("MongoDB ping failed:", err)
+	}
+
+	DB = client.Database(dbName)
+	Logger.MongoDB(fmt.Sprintf("Connection to %s successfully established.", fullURI))
+}
+
+func LoadAccessTokens() map[string]string {
+	collection := DB.Collection("tokenstores")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := collection.Find(ctx, bson.M{})
+	if err != nil {
+		Logger.Error("Failed to load tokens:", err)
+	}
+
+	tokens := make(map[string]string)
+	for cursor.Next(ctx) {
+		var t models.TokenStore
+		if err := cursor.Decode(&t); err != nil {
+			Logger.Error("Decode token error:", err)
+			continue
+		}
+		tokens[t.AccessToken] = t.AccountID
+	}
+	return tokens
+}
+
+func SendError(client *structs.Client) {
+	closeXML := `<close xmlns="urn:ietf:params:xml:ns:xmpp-framing"/>`
+	client.Conn.WriteMessage(1, []byte(closeXML))
+	client.Conn.Close()
+}
+
+func GetUserByAccountID(accountID string) (*models.User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	collection := DB.Collection("users")
+
+	var user models.User
+	err := collection.FindOne(ctx, bson.M{"accountId": accountID}).Decode(&user)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	if user.Banned {
+		return nil, fmt.Errorf("user is banned")
+	}
+
+	return &user, nil
+}
+
+func RemoveClient(server *structs.Server, client *structs.Client) {
+	server.ClientsMutex.Lock()
+	defer server.ClientsMutex.Unlock()
+
+	var clientStatus map[string]interface{}
+	_ = json.Unmarshal([]byte(client.LastPresenceUpdate.Status), &clientStatus)
+
+	UpdatePresenceForFriends(server, client, "{}", false, true)
+
+	for i, c := range server.Clients {
+		if c == client {
+			server.Clients = append(server.Clients[:i], server.Clients[i+1:]...)
+			break
+		}
+	}
+
+	for _, roomName := range client.JoinedMUCs {
+		if roomMembers, ok := server.MUCs[roomName]; ok {
+			delete(roomMembers, client.AccountID)
+		}
+	}
+
+	partyID := ""
+	if props, ok := clientStatus["Properties"].(map[string]interface{}); ok {
+		for key, val := range props {
+			if len(key) >= 14 && key[:14] == "party.joininfo" {
+				if obj, ok := val.(map[string]interface{}); ok {
+					if pid, ok := obj["partyId"].(string); ok {
+						partyID = pid
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if partyID != "" {
+		for _, c := range server.Clients {
+			if c.AccountID == client.AccountID {
+				continue
+			}
+			msg := map[string]interface{}{
+				"type": "com.epicgames.party.memberexited",
+				"payload": map[string]interface{}{
+					"partyId":   partyID,
+					"memberId":  client.AccountID,
+					"wasKicked": false,
+				},
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			}
+			data, _ := json.Marshal(msg)
+			xmlMsg := fmt.Sprintf(`<message from="%s" to="%s"><body>%s</body></message>`, client.JID, c.JID, string(data))
+			c.Conn.WriteMessage(1, []byte(xmlMsg))
+		}
+	}
+}
+
+func GetFriendsClients(server *structs.Server, accountID string) ([]*structs.Client, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	collection := DB.Collection("users")
+
+	var friendsDoc models.Friends
+	err := collection.FindOne(ctx, bson.M{"accountId": accountID}).Decode(&friendsDoc)
+	if err != nil {
+		return nil, err
+	}
+
+	var friendsClients []*structs.Client
+
+	for _, f := range friendsDoc.List.Accepted {
+		for _, c := range server.Clients {
+			if c.AccountID == f.AccountID {
+				friendsClients = append(friendsClients, c)
+				break
+			}
+		}
+	}
+
+	return friendsClients, nil
+}
+
+func GetFriendsPresence(server *structs.Server, ws *structs.Client, friends []*structs.Client) {
+	for _, friend := range friends {
+		presenceXML := fmt.Sprintf(`<presence from="%s" to="%s" type="available"><status>%s</status></presence>`,
+			friend.JID, ws.JID, friend.LastPresenceUpdate.Status)
+		if friend.LastPresenceUpdate.Away {
+			presenceXML = fmt.Sprintf(`<presence from="%s" to="%s" type="available"><show>away</show><status>%s</status></presence>`,
+				friend.JID, ws.JID, friend.LastPresenceUpdate.Status)
+		}
+		ws.Conn.WriteMessage(1, []byte(presenceXML))
+	}
+}
+
+func UpdatePresenceForFriends(server *structs.Server, sender *structs.Client, body string, away, offline bool) {
+	sender.LastPresenceUpdate.Away = away
+	sender.LastPresenceUpdate.Status = body
+
+	server.ClientsMutex.Lock()
+	defer server.ClientsMutex.Unlock()
+
+	for _, client := range server.Clients {
+		if client.AccountID == sender.AccountID {
+			continue
+		}
+		presenceType := "available"
+		if offline {
+			presenceType = "unavailable"
+		}
+		statusXML := body
+		if away {
+			presenceXML := fmt.Sprintf(`<presence from="%s" to="%s" type="%s"><show>away</show><status>%s</status></presence>`,
+				sender.JID, client.JID, presenceType, statusXML)
+			client.Conn.WriteMessage(1, []byte(presenceXML))
+		} else {
+			presenceXML := fmt.Sprintf(`<presence from="%s" to="%s" type="%s"><status>%s</status></presence>`,
+				sender.JID, client.JID, presenceType, statusXML)
+			client.Conn.WriteMessage(1, []byte(presenceXML))
+		}
+	}
+}
+
+func GetMUCMember(roomName, displayName, accountID, resource, domain string) string {
+	return fmt.Sprintf("%s@muc.%s/%s:%s:%s", roomName, domain, displayName, accountID, resource)
+}
+
+func GetNick(roomName, displayName, accountID, resource, domain string) string {
+	full := GetMUCMember(roomName, displayName, accountID, resource, domain)
+	return full[len(fmt.Sprintf("%s@muc.%s/", roomName, domain)):]
+}
+
+func FindClientByAccountID(server *structs.Server, accountID string) *structs.Client {
+	server.ClientsMutex.Lock()
+	defer server.ClientsMutex.Unlock()
+
+	for _, c := range server.Clients {
+		if c.AccountID == accountID {
+			return c
+		}
+	}
+	return nil
+}

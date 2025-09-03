@@ -21,13 +21,13 @@ func createLogger(prefix string) LoggerFunc {
 }
 
 var Logger = struct {
-	Backend LoggerFunc
+	XMPP    LoggerFunc
 	MongoDB LoggerFunc
 	Warning LoggerFunc
 	Error   LoggerFunc
 	Debug   LoggerFunc
 }{
-	Backend: createLogger("BACKEND"),
+	XMPP:    createLogger("XMPP"),
 	MongoDB: createLogger("MONGODB"),
 	Warning: createLogger("WARNING"),
 	Error:   createLogger("ERROR"),
