@@ -20,11 +20,9 @@ type Client struct {
 	Authenticated    bool
 	ClientExists     bool
 	ConnectionClosed bool
-	JoinedMUCs       []string
 }
 
 type Server struct {
 	Clients      []*Client
 	ClientsMutex sync.Mutex
-	MUCs         map[string]map[string]string
 }

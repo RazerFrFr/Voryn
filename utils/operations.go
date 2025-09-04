@@ -2,6 +2,8 @@ package utils
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"strings"
 
@@ -176,33 +178,89 @@ func HandlePresence(client *structs.Client, msg map[string]interface{}, server *
 	}
 
 	presenceType, _ := msg["@_type"].(string)
-	to, _ := msg["@_to"].(string)
 	status, _ := msg["status"].(string)
-	away := msg["show"] != nil
 
-	switch presenceType {
-	case "unavailable":
-		roomName := strings.Split(to, "@")[0]
-		if roomMembers, ok := server.MUCs[roomName]; ok {
-			delete(roomMembers, client.AccountID)
-			for i, rn := range client.JoinedMUCs {
-				if rn == roomName {
-					client.JoinedMUCs = append(client.JoinedMUCs[:i], client.JoinedMUCs[i+1:]...)
-					break
-				}
+	show, _ := msg["show"].(string)
+
+	resp := fmt.Sprintf(
+		`<presence from="%s" xmlns="jabber:client"%s>
+			%s
+			<status>%s</status>
+		</presence>`,
+		client.JID,
+		func() string {
+			if presenceType != "" {
+				return fmt.Sprintf(` type="%s"`, presenceType)
 			}
-		}
+			return ""
+		}(),
+		func() string {
+			if show != "" {
+				return fmt.Sprintf("<show>%s</show>", show)
+			}
+			return ""
+		}(),
+		status,
+	)
 
-	default:
-		roomName := strings.Split(to, "@")[0]
-		if _, ok := server.MUCs[roomName]; !ok {
-			server.MUCs[roomName] = make(map[string]string)
-		}
-		server.MUCs[roomName][client.AccountID] = client.DisplayName
-		client.JoinedMUCs = append(client.JoinedMUCs, roomName)
+	if err := client.Conn.WriteMessage(1, []byte(resp)); err != nil {
+		Logger.Error("Failed to send presence:", err)
 	}
 
 	client.LastPresenceUpdate.Status = status
-	client.LastPresenceUpdate.Away = away
-	UpdatePresenceForFriends(server, client, status, away, presenceType == "unavailable")
+	client.LastPresenceUpdate.Away = (show == "away")
+	UpdatePresenceForFriends(server, client, status, client.LastPresenceUpdate.Away, presenceType == "unavailable")
+}
+
+func SendMessageToAccountID(body interface{}, accountID string, server *structs.Server) error {
+	if server == nil {
+		return fmt.Errorf("server is nil")
+	}
+
+	var bodyStr string
+	switch v := body.(type) {
+	case string:
+		bodyStr = v
+	default:
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("failed to marshal body to JSON: %w", err)
+		}
+		bodyStr = string(bytes)
+	}
+
+	server.ClientsMutex.Lock()
+	defer server.ClientsMutex.Unlock()
+
+	var receiver *structs.Client
+	for _, cl := range server.Clients {
+		if cl.AccountID == accountID {
+			receiver = cl
+			break
+		}
+	}
+	if receiver == nil {
+		return fmt.Errorf("receiver with accountID %s not found", accountID)
+	}
+
+	msg := structs.Message{
+		From:  fmt.Sprintf("xmpp-admin@%s", XMPPDomain),
+		To:    receiver.JID,
+		XMLNS: "jabber:client",
+		Body:  bodyStr,
+	}
+
+	xmlBytes, err := xml.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message XML: %w", err)
+	}
+
+	xmlStr := string(xmlBytes)
+	xmlStr = strings.Replace(xmlStr, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "", 1)
+
+	if err := receiver.Conn.WriteMessage(1, []byte(xmlStr)); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	return nil
 }

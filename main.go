@@ -28,7 +28,6 @@ func main() {
 
 	xmppServer := &structs.Server{
 		Clients: []*structs.Client{},
-		MUCs:    make(map[string]map[string]string),
 	}
 
 	r := gin.Default()
@@ -48,6 +47,23 @@ func main() {
 			"usersAmount": len(xmppServer.Clients),
 			"Clients":     names,
 		})
+	})
+
+	r.POST("/api/voryn/send/:accountId", func(c *gin.Context) {
+		accountID := c.Param("accountId")
+
+		var body interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		if err := utils.SendMessageToAccountID(body, accountID, xmppServer); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.Status(204)
 	})
 
 	utils.Logger.XMPP("XMPP server started on port", port)
@@ -77,8 +93,6 @@ func main() {
 }
 
 func handleWebsocket(ws *websocket.Conn, client *structs.Client, server *structs.Server) {
-	client.JoinedMUCs = []string{}
-
 	server.ClientsMutex.Lock()
 	server.Clients = append(server.Clients, client)
 	client.ClientExists = true

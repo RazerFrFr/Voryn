@@ -95,12 +95,6 @@ func RemoveClient(server *structs.Server, client *structs.Client) {
 		}
 	}
 
-	for _, roomName := range client.JoinedMUCs {
-		if roomMembers, ok := server.MUCs[roomName]; ok {
-			delete(roomMembers, client.AccountID)
-		}
-	}
-
 	partyID := ""
 	if props, ok := clientStatus["Properties"].(map[string]interface{}); ok {
 		for key, val := range props {
@@ -200,15 +194,6 @@ func UpdatePresenceForFriends(server *structs.Server, sender *structs.Client, bo
 			client.Conn.WriteMessage(1, []byte(presenceXML))
 		}
 	}
-}
-
-func GetMUCMember(roomName, displayName, accountID, resource, domain string) string {
-	return fmt.Sprintf("%s@muc.%s/%s:%s:%s", roomName, domain, displayName, accountID, resource)
-}
-
-func GetNick(roomName, displayName, accountID, resource, domain string) string {
-	full := GetMUCMember(roomName, displayName, accountID, resource, domain)
-	return full[len(fmt.Sprintf("%s@muc.%s/", roomName, domain)):]
 }
 
 func FindClientByAccountID(server *structs.Server, accountID string) *structs.Client {
