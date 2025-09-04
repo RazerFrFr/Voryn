@@ -20,36 +20,39 @@ func HandleOpen(client *structs.Client, data map[string]string, server *structs.
 		data["ID"] = strings.ReplaceAll(id.String(), "-", "")
 	}
 
+	data["ID"] = strings.ReplaceAll(uuid.New().String(), "-", "")
+	client.ClientExists = true
+
 	openXML := fmt.Sprintf(`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="%s" id="%s" version="1.0" xml:lang="en"/>`,
 		XMPPDomain, data["ID"])
 	client.Conn.WriteMessage(websocket.TextMessage, []byte(openXML))
 
-	var response string
+	var features string
 	if client.Authenticated {
-		response = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
-			<ver xmlns="urn:xmpp:features:rosterver"/>
-			<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>
-			<bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"/>
-			<compression xmlns="http://jabber.org/features/compress">
-				<method>zlib</method>
-			</compression>
-			<session xmlns="urn:ietf:params:xml:ns:xmpp-session"/>
-		</stream:features>`
+		features = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
+            <ver xmlns="urn:xmpp:features:rosterver"/>
+            <starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>
+            <bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"/>
+            <compression xmlns="http://jabber.org/features/compress">
+                <method>zlib</method>
+            </compression>
+            <session xmlns="urn:ietf:params:xml:ns:xmpp-session"/>
+        </stream:features>`
 	} else {
-		response = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
-			<mechanisms xmlns="urn:ietf:params:xml:ns:xmpp-sasl">
-				<mechanism>PLAIN</mechanism>
-			</mechanisms>
-			<ver xmlns="urn:xmpp:features:rosterver"/>
-			<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>
-			<compression xmlns="http://jabber.org/features/compress">
-				<method>zlib</method>
-			</compression>
-			<auth xmlns="http://jabber.org/features:iq-auth"/>
-		</stream:features>`
+		features = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
+            <mechanisms xmlns="urn:ietf:params:xml:ns:xmpp-sasl">
+                <mechanism>PLAIN</mechanism>
+            </mechanisms>
+            <ver xmlns="urn:xmpp:features:rosterver"/>
+            <starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>
+            <compression xmlns="http://jabber.org/features/compress">
+                <method>zlib</method>
+            </compression>
+            <auth xmlns="http://jabber.org/features:iq-auth"/>
+        </stream:features>`
 	}
 
-	client.Conn.WriteMessage(websocket.TextMessage, []byte(response))
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(features))
 }
 
 func HandleAuth(client *structs.Client, content string, server *structs.Server) error {
@@ -113,8 +116,15 @@ func HandleAuth(client *structs.Client, content string, server *structs.Server) 
 
 func HandleIQ(client *structs.Client, root map[string]interface{}, server *structs.Server) {
 	id, _ := root["-id"].(string)
-	iqType, _ := root["-type"].(string)
-	if id == "" || iqType != "set" {
+	if id == "" {
+		SendError(client)
+		return
+	}
+
+	if _, ok := root["ping"]; ok {
+		resp := fmt.Sprintf(`<iq to="%s" from="%s" id="%s" type="result" xmlns="jabber:client"/>`,
+			client.JID, XMPPDomain, id)
+		client.Conn.WriteMessage(websocket.TextMessage, []byte(resp))
 		return
 	}
 
@@ -145,8 +155,8 @@ func HandleIQ(client *structs.Client, root map[string]interface{}, server *struc
 		client.JID = fmt.Sprintf("%s@%s/%s", client.AccountID, XMPPDomain, client.Resource)
 
 		bindXML := fmt.Sprintf(`<iq to="%s" id="_xmpp_bind1" type="result" xmlns="jabber:client">
-			<bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><jid>%s</jid></bind>
-		</iq>`, client.JID, client.JID)
+            <bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><jid>%s</jid></bind>
+        </iq>`, client.JID, client.JID)
 
 		client.Conn.WriteMessage(websocket.TextMessage, []byte(bindXML))
 
@@ -240,7 +250,7 @@ func SendMessageToAccountID(body interface{}, accountID string, server *structs.
 		}
 	}
 	if receiver == nil {
-		return fmt.Errorf("receiver with accountID %s not found", accountID)
+		return nil
 	}
 
 	msg := structs.Message{

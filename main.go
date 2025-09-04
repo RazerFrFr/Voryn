@@ -18,7 +18,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	godotenv.Load()
+	_ = godotenv.Load()
 	utils.InitDB()
 
 	port := os.Getenv("PORT")
@@ -31,9 +31,29 @@ func main() {
 	}
 
 	r := gin.Default()
+	r.RedirectTrailingSlash = false
+
+	r.Use(func(c *gin.Context) {
+		if (c.Request.URL.Path == "/" || c.Request.URL.Path == "//") && websocket.IsWebSocketUpgrade(c.Request) {
+			ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+			if err != nil {
+				utils.Logger.Error("WebSocket upgrade failed:", err)
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "WebSocket upgrade failed"})
+				return
+			}
+
+			client := &structs.Client{Conn: ws}
+			go handleWebsocket(ws, client, xmppServer)
+
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	})
 
 	r.GET("/", func(c *gin.Context) {
-		c.String(http.StatusOK, "Voryn, Made by Razer.")
+		c.String(200, "Voryn, Made by Razer.")
 	})
 
 	r.GET("/clients", func(c *gin.Context) {
@@ -67,27 +87,7 @@ func main() {
 	})
 
 	utils.Logger.XMPP("XMPP server started on port", port)
-
-	// Handle WebSocket and HTTP at the same time (this is the working way that ik ig)
-	httpServer := &http.Server{
-		Addr: ":" + port,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if websocket.IsWebSocketUpgrade(req) {
-				ws, err := upgrader.Upgrade(w, req, nil)
-				if err != nil {
-					utils.Logger.Error("WebSocket upgrade failed:", err)
-					return
-				}
-				client := &structs.Client{Conn: ws}
-				handleWebsocket(ws, client, xmppServer)
-				return
-			}
-
-			r.ServeHTTP(w, req)
-		}),
-	}
-
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := r.Run(":" + port); err != nil {
 		utils.Logger.Error("Server failed:", err)
 	}
 }
@@ -98,22 +98,24 @@ func handleWebsocket(ws *websocket.Conn, client *structs.Client, server *structs
 	client.ClientExists = true
 	server.ClientsMutex.Unlock()
 
+	defer func() {
+		utils.RemoveClient(server, client)
+		_ = ws.Close()
+	}()
+
 	for {
 		_, message, err := ws.ReadMessage()
 		if err != nil {
 			utils.Logger.Error("WebSocket read error:", err)
-			utils.RemoveClient(server, client)
-			break
+			return
 		}
 
-		msgStr := string(message)
-		msgStr = strings.TrimSpace(msgStr)
+		msgStr := strings.TrimSpace(string(message))
 		if msgStr == "" {
 			continue
 		}
 
-		var root mxj.Map
-		root, err = mxj.NewMapXml([]byte(msgStr))
+		root, err := mxj.NewMapXml([]byte(msgStr))
 		if err != nil {
 			utils.Logger.Error("Failed to parse XML:", err)
 			utils.SendError(client)
@@ -129,40 +131,24 @@ func handleWebsocket(ws *websocket.Conn, client *structs.Client, server *structs
 
 			switch baseName {
 			case "open":
-				data := map[string]string{}
-				utils.HandleOpen(client, data, server)
-
+				utils.HandleOpen(client, map[string]string{}, server)
 			case "auth":
 				content := ""
 				if v, ok := nodeValue.(map[string]interface{})["#text"]; ok {
 					content, _ = v.(string)
 				}
 				utils.HandleAuth(client, content, server)
-
 			case "iq":
-				nodeMap, ok := nodeValue.(map[string]interface{})
-				if ok {
+				if nodeMap, ok := nodeValue.(map[string]interface{}); ok {
 					utils.HandleIQ(client, nodeMap, server)
 				}
-
 			case "presence":
-				nodeMap, ok := nodeValue.(map[string]interface{})
-				if ok {
+				if nodeMap, ok := nodeValue.(map[string]interface{}); ok {
 					utils.HandlePresence(client, nodeMap, server)
 				}
-
 			case "close":
-				utils.RemoveClient(server, client)
-				ws.Close()
 				return
 			}
-		}
-
-		if !client.ClientExists && client.AccountID != "" && client.DisplayName != "" && client.Token != "" && client.JID != "" && client.Resource != "" && client.Authenticated {
-			server.ClientsMutex.Lock()
-			server.Clients = append(server.Clients, client)
-			client.ClientExists = true
-			server.ClientsMutex.Unlock()
 		}
 	}
 }
