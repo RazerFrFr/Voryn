@@ -27,9 +27,8 @@ func main() {
 	}
 
 	xmppServer := &structs.Server{
-		Clients:      []*structs.Client{},
-		MUCs:         make(map[string]map[string]string),
-		AccessTokens: utils.LoadAccessTokens(),
+		Clients: []*structs.Client{},
+		MUCs:    make(map[string]map[string]string),
 	}
 
 	r := gin.Default()

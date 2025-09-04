@@ -10,6 +10,7 @@ import (
 
 	"github.com/RazerFrFr/Voryn/models"
 	"github.com/RazerFrFr/Voryn/structs"
+	"github.com/gorilla/websocket"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -51,28 +52,6 @@ func InitDB() {
 
 	DB = client.Database(dbName)
 	Logger.MongoDB(fmt.Sprintf("Connection to %s successfully established.", fullURI))
-}
-
-func LoadAccessTokens() map[string]string {
-	collection := DB.Collection("tokenstores")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := collection.Find(ctx, bson.M{})
-	if err != nil {
-		Logger.Error("Failed to load tokens:", err)
-	}
-
-	tokens := make(map[string]string)
-	for cursor.Next(ctx) {
-		var t models.TokenStore
-		if err := cursor.Decode(&t); err != nil {
-			Logger.Error("Decode token error:", err)
-			continue
-		}
-		tokens[t.AccessToken] = t.AccountID
-	}
-	return tokens
 }
 
 func SendError(client *structs.Client) {
@@ -242,4 +221,26 @@ func FindClientByAccountID(server *structs.Server, accountID string) *structs.Cl
 		}
 	}
 	return nil
+}
+
+func SendSASLError(client *structs.Client, condition string) {
+	errXML := fmt.Sprintf(
+		`<failure xmlns="urn:ietf:params:xml:ns:xmpp-sasl"><%s/></failure>`, condition,
+	)
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(errXML))
+}
+
+func FindToken(token string) (*models.TokenStore, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	collection := DB.Collection("tokenstores")
+
+	var store models.TokenStore
+	err := collection.FindOne(ctx, bson.M{"accessToken": token}).Decode(&store)
+	if err != nil {
+		return nil, fmt.Errorf("token not found: %w", err)
+	}
+
+	return &store, nil
 }

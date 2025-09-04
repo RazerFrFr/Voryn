@@ -15,17 +15,16 @@ const XMPPDomain string = "prod.ol.epicgames.com"
 func HandleOpen(client *structs.Client, data map[string]string, server *structs.Server) {
 	if _, ok := data["ID"]; !ok {
 		id := uuid.New()
-		idStr := strings.ReplaceAll(id.String(), "-", "")
-		data["ID"] = idStr
+		data["ID"] = strings.ReplaceAll(id.String(), "-", "")
 	}
 
 	openXML := fmt.Sprintf(`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="%s" id="%s" version="1.0" xml:lang="en"/>`,
 		XMPPDomain, data["ID"])
-	client.Conn.WriteMessage(1, []byte(openXML))
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(openXML))
 
-	var featuresXML string
+	var response string
 	if client.Authenticated {
-		featuresXML = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
+		response = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
 			<ver xmlns="urn:xmpp:features:rosterver"/>
 			<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>
 			<bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"/>
@@ -35,7 +34,7 @@ func HandleOpen(client *structs.Client, data map[string]string, server *structs.
 			<session xmlns="urn:ietf:params:xml:ns:xmpp-session"/>
 		</stream:features>`
 	} else {
-		featuresXML = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
+		response = `<stream:features xmlns:stream="http://etherx.jabber.org/streams">
 			<mechanisms xmlns="urn:ietf:params:xml:ns:xmpp-sasl">
 				<mechanism>PLAIN</mechanism>
 			</mechanisms>
@@ -44,11 +43,11 @@ func HandleOpen(client *structs.Client, data map[string]string, server *structs.
 			<compression xmlns="http://jabber.org/features/compress">
 				<method>zlib</method>
 			</compression>
-			<auth xmlns="http://jabber.org/features/iq-auth"/>
+			<auth xmlns="http://jabber.org/features:iq-auth"/>
 		</stream:features>`
 	}
 
-	client.Conn.WriteMessage(1, []byte(featuresXML))
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(response))
 }
 
 func HandleAuth(client *structs.Client, content string, server *structs.Server) error {
@@ -57,44 +56,46 @@ func HandleAuth(client *structs.Client, content string, server *structs.Server) 
 	}
 	if content == "" {
 		Logger.Error("Auth content missing")
+		SendSASLError(client, "not-authorized")
 		return fmt.Errorf("content missing")
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(content)
 	if err != nil {
 		Logger.Error("Base64 decode failed:", err)
+		SendSASLError(client, "not-authorized")
 		return err
 	}
 
 	parts := strings.Split(string(decoded), "\x00")
 	if len(parts) != 3 {
 		Logger.Error("Decoded auth parts invalid")
+		SendSASLError(client, "not-authorized")
 		return fmt.Errorf("invalid auth format")
 	}
 
 	tokenStr := parts[2]
-	accountID, ok := server.AccessTokens[tokenStr]
-	if !ok {
-		Logger.Error("Access token not found")
-		client.Conn.Close()
+	tokenStore, err := FindToken(tokenStr)
+	if err != nil {
+		Logger.Error("Access token not found:", err)
+		SendSASLError(client, "not-authorized")
 		return fmt.Errorf("invalid token")
 	}
 
-	clientDataExists := false
+	accountID := tokenStore.AccountID
+
 	for _, c := range server.Clients {
 		if c.AccountID == accountID {
-			clientDataExists = true
-			break
+			Logger.Error("Client already connected")
+			SendSASLError(client, "conflict")
+			return fmt.Errorf("already connected")
 		}
-	}
-	if clientDataExists {
-		Logger.Error("Client already connected")
-		return fmt.Errorf("already connected")
 	}
 
 	user, err := GetUserByAccountID(accountID)
 	if err != nil || user.Banned {
 		Logger.Error("User not found or banned")
+		SendSASLError(client, "not-authorized")
 		return fmt.Errorf("invalid user")
 	}
 
@@ -104,7 +105,7 @@ func HandleAuth(client *structs.Client, content string, server *structs.Server) 
 	client.Authenticated = true
 
 	successXML := `<success xmlns="urn:ietf:params:xml:ns:xmpp-sasl"/>`
-	client.Conn.WriteMessage(1, []byte(successXML))
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(successXML))
 	return nil
 }
 

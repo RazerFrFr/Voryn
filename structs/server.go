@@ -27,5 +27,4 @@ type Server struct {
 	Clients      []*Client
 	ClientsMutex sync.Mutex
 	MUCs         map[string]map[string]string
-	AccessTokens map[string]string
 }
