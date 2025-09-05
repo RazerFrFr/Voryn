@@ -69,7 +69,7 @@ func main() {
 		})
 	})
 
-	r.POST("/api/voryn/send/:accountId", func(c *gin.Context) {
+	r.POST("/api/voryn/message/send/:accountId", func(c *gin.Context) {
 		accountID := c.Param("accountId")
 
 		var body interface{}
@@ -78,7 +78,25 @@ func main() {
 			return
 		}
 
-		if err := utils.SendMessageToAccountID(body, accountID, xmppServer); err != nil {
+		if err := utils.SendMessage(body, accountID, xmppServer); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.Status(204)
+	})
+
+	r.POST("/api/voryn/presence/send/:accountId/:receiverId", func(c *gin.Context) {
+		accountID := c.Param("accountId")
+		receiverID := c.Param("receiverId")
+		offlineQuery := c.Query("offline")
+
+		isOffline := false
+		if offlineQuery == "true" {
+			isOffline = true
+		}
+
+		if err := utils.SendPresence(accountID, receiverID, isOffline, xmppServer); err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}

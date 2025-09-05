@@ -222,7 +222,7 @@ func HandlePresence(client *structs.Client, msg map[string]interface{}, server *
 	UpdatePresenceForFriends(server, client, status, client.LastPresenceUpdate.Away, presenceType == "unavailable")
 }
 
-func SendMessageToAccountID(body interface{}, accountID string, server *structs.Server) error {
+func SendMessage(body interface{}, accountID string, server *structs.Server) error {
 	if server == nil {
 		return fmt.Errorf("server is nil")
 	}
@@ -270,6 +270,61 @@ func SendMessageToAccountID(body interface{}, accountID string, server *structs.
 
 	if err := receiver.Conn.WriteMessage(1, []byte(xmlStr)); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	return nil
+}
+
+func SendPresence(fromID, toID string, offline bool, server *structs.Server) error {
+	if server == nil {
+		return fmt.Errorf("server is nil")
+	}
+
+	server.ClientsMutex.Lock()
+	defer server.ClientsMutex.Unlock()
+
+	var sender, receiver *structs.Client
+	for _, cl := range server.Clients {
+		if cl.AccountID == fromID {
+			sender = cl
+		}
+		if cl.AccountID == toID {
+			receiver = cl
+		}
+	}
+
+	if sender == nil || receiver == nil {
+		return nil
+	}
+
+	presence := structs.Presence{
+		To:     receiver.JID,
+		From:   sender.JID,
+		XMLNS:  "jabber:client",
+		Type:   "",
+		Status: sender.LastPresenceUpdate.Status,
+	}
+
+	if offline {
+		presence.Type = "unavailable"
+	} else {
+		presence.Type = "available"
+	}
+
+	if sender.LastPresenceUpdate.Away {
+		presence.Show = "away"
+	}
+
+	xmlBytes, err := xml.Marshal(presence)
+	if err != nil {
+		return fmt.Errorf("failed to marshal presence XML: %w", err)
+	}
+
+	xmlStr := string(xmlBytes)
+	xmlStr = strings.Replace(xmlStr, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "", 1)
+
+	if err := receiver.Conn.WriteMessage(1, []byte(xmlStr)); err != nil {
+		return fmt.Errorf("failed to send presence: %w", err)
 	}
 
 	return nil
