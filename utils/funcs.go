@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/RazerFrFr/Voryn/models"
@@ -81,28 +82,27 @@ func GetUserByAccountID(accountID string) (*models.User, error) {
 
 func RemoveClient(server *structs.Server, client *structs.Client) {
 	server.ClientsMutex.Lock()
-	defer server.ClientsMutex.Unlock()
-
-	var clientStatus map[string]interface{}
-	_ = json.Unmarshal([]byte(client.LastPresenceUpdate.Status), &clientStatus)
-
-	UpdatePresenceForFriends(server, client, "{}", false, true)
-
 	for i, c := range server.Clients {
 		if c == client {
 			server.Clients = append(server.Clients[:i], server.Clients[i+1:]...)
 			break
 		}
 	}
+	server.ClientsMutex.Unlock()
+
+	UpdatePresenceForFriends(server, client, "{}", false, true)
 
 	partyID := ""
-	if props, ok := clientStatus["Properties"].(map[string]interface{}); ok {
-		for key, val := range props {
-			if len(key) >= 14 && key[:14] == "party.joininfo" {
-				if obj, ok := val.(map[string]interface{}); ok {
-					if pid, ok := obj["partyId"].(string); ok {
-						partyID = pid
-						break
+	var clientStatus map[string]interface{}
+	if err := json.Unmarshal([]byte(client.LastPresenceUpdate.Status), &clientStatus); err == nil {
+		if props, ok := clientStatus["Properties"].(map[string]interface{}); ok {
+			for key, val := range props {
+				if len(key) >= 14 && strings.ToLower(key[:14]) == "party.joininfo" {
+					if obj, ok := val.(map[string]interface{}); ok {
+						if pid, ok := obj["partyId"].(string); ok {
+							partyID = pid
+							break
+						}
 					}
 				}
 			}
@@ -114,20 +114,35 @@ func RemoveClient(server *structs.Server, client *structs.Client) {
 			if c.AccountID == client.AccountID {
 				continue
 			}
-			msg := map[string]interface{}{
-				"type": "com.epicgames.party.memberexited",
-				"payload": map[string]interface{}{
-					"partyId":   partyID,
-					"memberId":  client.AccountID,
-					"wasKicked": false,
-				},
-				"timestamp": time.Now().UTC().Format(time.RFC3339),
-			}
-			data, _ := json.Marshal(msg)
-			xmlMsg := fmt.Sprintf(`<message from="%s" to="%s"><body>%s</body></message>`, client.JID, c.JID, string(data))
-			c.Conn.WriteMessage(1, []byte(xmlMsg))
+
+			go func(c *structs.Client) {
+				msg := map[string]interface{}{
+					"type": "com.epicgames.party.memberexited",
+					"payload": map[string]interface{}{
+						"partyId":   partyID,
+						"memberId":  client.AccountID,
+						"wasKicked": false,
+					},
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				}
+				data, _ := json.Marshal(msg)
+				xmlMsg := fmt.Sprintf(`<message from="%s" to="%s"><body>%s</body></message>`,
+					client.JID, c.JID, string(data))
+
+				c.Conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				if err := c.Conn.WriteMessage(websocket.TextMessage, []byte(xmlMsg)); err != nil {
+					Logger.Error("Failed to send party exit:", err)
+				}
+			}(c)
 		}
 	}
+
+	client.AccountID = ""
+	client.JID = ""
+	client.Resource = ""
+	client.Token = ""
+	client.Authenticated = false
+	client.ClientExists = false
 }
 
 func GetFriendsClients(server *structs.Server, accountID string) ([]*structs.Client, error) {

@@ -14,17 +14,22 @@ import (
 
 const XMPPDomain string = "prod.ol.epicgames.com"
 
-func HandleOpen(client *structs.Client, data map[string]string, server *structs.Server) {
-	if _, ok := data["ID"]; !ok {
-		id := uuid.New()
-		data["ID"] = strings.ReplaceAll(id.String(), "-", "")
+func HandleOpen(client *structs.Client, data map[string]string, rawOpen map[string]string) {
+	id := rawOpen["id"]
+	if id == "" {
+		id = strings.ReplaceAll(uuid.New().String(), "-", "")
 	}
 
-	data["ID"] = strings.ReplaceAll(uuid.New().String(), "-", "")
-	client.ClientExists = true
+	from := XMPPDomain
+	version := rawOpen["version"]
+	if version == "" {
+		version = "1.0"
+	}
 
-	openXML := fmt.Sprintf(`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="%s" id="%s" version="1.0" xml:lang="en"/>`,
-		XMPPDomain, data["ID"])
+	openXML := fmt.Sprintf(
+		`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="%s" id="%s" version="%s" xml:lang="en"/>`,
+		from, id, version,
+	)
 	client.Conn.WriteMessage(websocket.TextMessage, []byte(openXML))
 
 	var features string

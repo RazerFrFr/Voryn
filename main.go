@@ -116,15 +116,15 @@ func handleWebsocket(ws *websocket.Conn, client *structs.Client, server *structs
 	client.ClientExists = true
 	server.ClientsMutex.Unlock()
 
-	defer func() {
-		utils.RemoveClient(server, client)
-		_ = ws.Close()
-	}()
-
 	for {
 		_, message, err := ws.ReadMessage()
 		if err != nil {
-			utils.Logger.Error("WebSocket read error:", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				utils.Logger.Error("WebSocket read error:", err)
+			}
+
+			utils.RemoveClient(server, client)
+			_ = ws.Close()
 			return
 		}
 
@@ -149,7 +149,15 @@ func handleWebsocket(ws *websocket.Conn, client *structs.Client, server *structs
 
 			switch baseName {
 			case "open":
-				utils.HandleOpen(client, map[string]string{}, server)
+				rawAttrs := map[string]string{}
+				if v, ok := nodeValue.(map[string]interface{}); ok {
+					for k, val := range v {
+						if s, ok := val.(string); ok {
+							rawAttrs[k] = s
+						}
+					}
+				}
+				utils.HandleOpen(client, map[string]string{}, rawAttrs)
 			case "auth":
 				content := ""
 				if v, ok := nodeValue.(map[string]interface{})["#text"]; ok {
