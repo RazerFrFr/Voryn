@@ -86,24 +86,6 @@ func main() {
 		c.Status(204)
 	})
 
-	r.POST("/api/voryn/presence/send/:accountId/:receiverId", func(c *gin.Context) {
-		accountID := c.Param("accountId")
-		receiverID := c.Param("receiverId")
-		offlineQuery := c.Query("offline")
-
-		isOffline := false
-		if offlineQuery == "true" {
-			isOffline = true
-		}
-
-		if err := utils.SendPresence(accountID, receiverID, isOffline, xmppServer); err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.Status(204)
-	})
-
 	utils.Logger.XMPP("XMPP server started on port", port)
 	if err := r.Run(":" + port); err != nil {
 		utils.Logger.Error("Server failed:", err)
