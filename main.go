@@ -86,6 +86,36 @@ func main() {
 		c.Status(204)
 	})
 
+	r.DELETE("/api/voryn/client/remove/:accountId", func(c *gin.Context) {
+		accountID := c.Param("accountId")
+
+		xmppServer.ClientsMutex.Lock()
+		var clientsToRemove []*structs.Client
+		for _, cl := range xmppServer.Clients {
+			if cl.AccountID == accountID {
+				clientsToRemove = append(clientsToRemove, cl)
+			}
+		}
+		xmppServer.ClientsMutex.Unlock()
+
+		if len(clientsToRemove) == 0 {
+			c.JSON(404, gin.H{"error": "Client not found"})
+			return
+		}
+
+		for _, client := range clientsToRemove {
+			utils.RemoveClient(xmppServer, client)
+			if client.Conn != nil {
+				_ = client.Conn.Close()
+			}
+		}
+
+		c.JSON(200, gin.H{
+			"status":    "REMOVED",
+			"accountId": accountID,
+		})
+	})
+
 	utils.Logger.XMPP("XMPP server started on port", port)
 	if err := r.Run(":" + port); err != nil {
 		utils.Logger.Error("Server failed:", err)

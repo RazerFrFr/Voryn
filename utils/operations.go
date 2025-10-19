@@ -84,15 +84,15 @@ func HandleAuth(client *structs.Client, content string, server *structs.Server) 
 		return fmt.Errorf("invalid auth format")
 	}
 
-	tokenStr := parts[2]
-	tokenStore, err := FindToken(tokenStr)
+	tokenStr := strings.TrimPrefix(parts[2], "eg1~")
+	claims, err := DecodeToken(tokenStr)
 	if err != nil {
-		Logger.Error("Access token not found:", err)
+		Logger.Error("Access token is Invalid:", err)
 		SendSASLError(client, "not-authorized")
 		return fmt.Errorf("invalid token")
 	}
 
-	accountID := tokenStore.AccountID
+	accountID := claims.Sub
 
 	for _, c := range server.Clients {
 		if c.AccountID == accountID {

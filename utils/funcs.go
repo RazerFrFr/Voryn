@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -230,17 +231,52 @@ func SendSASLError(client *structs.Client, condition string) {
 	client.Conn.WriteMessage(websocket.TextMessage, []byte(errXML))
 }
 
-func FindToken(token string) (*models.TokenStore, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+type TokenPayload struct {
+	App          string `json:"app,omitempty"`
+	Sub          string `json:"sub,omitempty"`
+	Dvid         string `json:"dvid,omitempty"`
+	Mver         bool   `json:"mver,omitempty"`
+	Clid         string `json:"clid,omitempty"`
+	Dn           string `json:"dn,omitempty"`
+	Am           string `json:"am,omitempty"`
+	P            string `json:"p,omitempty"`
+	Iai          string `json:"iai,omitempty"`
+	Sec          int    `json:"sec,omitempty"`
+	Clsvc        string `json:"clsvc,omitempty"`
+	T            string `json:"t,omitempty"`
+	Ic           bool   `json:"ic,omitempty"`
+	Jti          string `json:"jti,omitempty"`
+	CreationDate string `json:"creation_date"`
+	HoursExpire  int    `json:"hours_expire"`
+}
 
-	collection := DB.Collection("tokens")
+func DecodeToken(token string) (*TokenPayload, error) {
+	token = strings.TrimSpace(token)
+	token = strings.TrimPrefix(token, "eg1~")
 
-	var store models.TokenStore
-	err := collection.FindOne(ctx, bson.M{"accessToken": token}).Decode(&store)
-	if err != nil {
-		return nil, fmt.Errorf("token not found: %w", err)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
 	}
 
-	return &store, nil
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("payload decode error: %w", err)
+	}
+
+	var claims TokenPayload
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("json unmarshal error: %w", err)
+	}
+
+	creationTime, err := time.Parse(time.RFC3339, claims.CreationDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid creation_date: %w", err)
+	}
+	expiry := creationTime.Add(time.Duration(claims.HoursExpire) * time.Hour)
+	if time.Now().After(expiry) {
+		return nil, fmt.Errorf("token expired")
+	}
+
+	return &claims, nil
 }
